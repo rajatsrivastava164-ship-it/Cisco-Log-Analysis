@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Catalyst 1300 Log Analyzer</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b2230;--mu:#667085;--bd:#dde1e8;--ac:#0b6bcb;--r:#c62828;--o:#e08a00;--g:#2e7d32;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#12151b;--card:#1b2029;--tx:#e6e9ef;--mu:#98a2b3;--bd:#2c3340;--ac:#5aa8ff;--r:#ff6b6b;--o:#ffb020;--g:#5fd068}}
+:root[data-theme="dark"]{--bg:#12151b;--card:#1b2029;--tx:#e6e9ef;--mu:#98a2b3;--bd:#2c3340;--ac:#5aa8ff;--r:#ff6b6b;--o:#ffb020;--g:#5fd068}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:0 0 8px}
+.sub{color:var(--mu);margin:0 0 16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:14px}
+textarea{width:100%;box-sizing:border-box;min-height:64px;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:8px;font:12px monospace}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+button,.btn{background:var(--ac);color:#fff;border:0;border-radius:6px;padding:8px 14px;font-size:14px;cursor:pointer}
+button.s{background:transparent;color:var(--ac);border:1px solid var(--ac)}
+#drop{border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--mu)}
+#drop.h{border-color:var(--ac)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}
+.k{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px}
+.k b{display:block;font-size:24px}.k span{color:var(--mu);font-size:12px}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;color:#fff}
+.hi{background:var(--r)}.me{background:var(--o)}.lo{background:var(--g)}
+.w{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+td.m{font-family:monospace;font-size:12px;word-break:break-all}
+.none{color:var(--g)}small{color:var(--mu)}
+#login{max-width:340px;margin:12vh auto;padding:0 16px}#login input{width:100%;box-sizing:border-box;margin:4px 0 12px;padding:9px;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px;font-size:15px}#login button{width:100%}#lerr{color:var(--r);min-height:20px;font-size:13px}
+</style></head><body><div id="login"><div class="card"><h1>Catalyst 1300 Log Analyzer</h1><p class="sub">Please sign in to continue.</p>
+<label for="lu">Username</label><input id="lu" autocomplete="username">
+<label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password">
+<div id="lerr"></div><button id="lb">Sign in</button></div></div>
+<main id="app" style="display:none">
+<button class="s" id="lo" style="float:right">Log out</button>
+<h1>Catalyst 1300 Log Analyzer</h1>
+<p class="sub">Upload a switch log file to get an analysis report. Everything runs in your browser; no data is sent anywhere.</p>
+
+<div class="card">
+<div id="drop">Drop a log file here or select one:<br><input id="f" type="file">
+<div style="margin-top:8px"><button class="s" id="demo">Try sample log</button></div></div>
+<h2 style="margin-top:12px">Or paste log text directly</h2>
+<textarea id="pt" style="min-height:110px" placeholder="Paste log text here"></textarea>
+<button id="pb" style="margin-top:8px">Analyze</button> <small id="st"></small>
+<div class="grid" style="margin-top:12px">
+<div><h2>Authorized MAC list (optional)</h2><textarea id="wl" placeholder="One MAC per line. If left empty, only MACs from port-security violations are flagged."></textarea></div>
+<div><h2>Expected switch IPs (optional)</h2><textarea id="ex" placeholder="10.102.1.11&#10;10.102.1.12&#10;Any IP not found in the logs is treated as silent/unmanageable."></textarea></div>
+</div></div>
+<div id="out"></div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const R={
+down:/%LINK-\w-Down|link.*\bdown\b|changed state to down/i,
+stp:/%STP|spanning|topology change|\bTCN\b/i,
+auth:/fail(ed)?.*(login|auth|password)|(login|auth\w*).*fail|AAA-W-REJECT|invalid (user|password)|authentication (fail|reject)|rejected/i,
+psec:/port.?security|violation|secure.?mac|mac.*limit/i,
+flap:/mac.*(flap|moved)|flap.*mac|moved from/i,
+unm:/unreachable|not responding|time(d)? ?out|offline|lost (connection|contact)|unit \d+.*(removed|down|left)|snmp.*(fail|timeout)|no response|stack.*(down|lost)/i,
+cfg:/copy |write |startup-config|running-config|config\w* (chang|sav)|reload|reboot|cold ?start|firmware|image (upgrad|activ)|privilege|enable password|user (added|deleted|created)/i,
+att:/loop|storm|dhcp.*(snoop|spoof|rogue)|arp.*(inspect|spoof)|\bdeny|denied|\bacl\b|bpdu.?guard|root.?guard|err-?disable|attack|scan|shutdown/i};
+const macRe=/\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b|\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b/gi;
+const ipRe=/\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+const portRe=/\b((?:gi|te|fa|tw)\d+(?:\/\d+){0,2}|(?:Gigabit|TenGigabit|Fast)Ethernet\d+(?:\/\d+){1,2})\b/i;
+const nm=m=>{const h=m.replace(/[^0-9a-f]/gi,'').toLowerCase();return h.match(/.{2}/g).join(':')};
+const skipMac=m=>/^(ff:ff|01:80:c2|01:00:5e|33:33|00:00:00)/.test(m);
+const cnt=(o,k)=>o[k]=(o[k]||0)+1;
+const topN=o=>Object.entries(o).sort((a,b)=>b[1]-a[1]);
+
+const MON={Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+const TS=/^(\d+)-([A-Za-z]{3})-(\d{4}) (\d+):(\d+):(\d+)/;
+const LG=/^(\d+-[A-Za-z]{3}-\d{4} [\d:]+)\s*:?\s*%([A-Z0-9_]+)-([A-Z0-9])-([A-Za-z0-9_]+):\s*(.*)$/;
+const tsn=l=>{const m=l.match(TS);return m?new Date(+m[3],MON[m[2]],+m[1],+m[4],+m[5],+m[6]).getTime():0};
+function analyze(text,wlTxt,exTxt){
+const lines=text.split(/\r?\n/).filter(l=>l.trim());
+const fmt=lines.some(x=>LG.test(x));
+const wl=new Set((wlTxt.match(macRe)||[]).map(nm));
+const expIps=new Set(exTxt.match(ipRe)||[]);
+const sev={err:0,warn:0,info:0},ex={down:{},auth:{},flap:{},macs:{}};
+const S={unm:[],psec:[],flap:[],cfg:[],att:[],stp:0,auth:0},macLines={},unmIps={},sw={},aaa={},dates={},seen=new Set(),pulled=new Set(),found=[];
+let cur='Log',nl=0;
+const mk=ip=>({ip,n:0,dn:0,up:0,stp:0,boot:0,cp:0,pd:{},ls:{}});
+for(const l of lines){
+ let m;
+ if(m=l.match(/^- Found: (.+?) at ([\d.]+)/)){found.push([m[1],m[2]]);continue}
+ if(/Connecting to .*\(/.test(l))continue;
+ if(m=l.match(/SSH MANUAL PULL\s*:\s*(.+?)\s*\(([\d.]+)\)/)){cur=m[1];sw[cur]=sw[cur]||mk(m[2]);pulled.add(m[2]);seen.add(m[2]);continue}
+ if(/^[=\-]{6,}/.test(l.trim()))continue;
+ (l.match(ipRe)||[]).forEach(i=>seen.add(i));
+ const lm=l.match(LG);
+ if(fmt&&!lm)continue;
+ nl++;
+ const W=sw[cur]||(sw[cur]=mk(''));W.n++;
+ const pl=cur+' | '+l;
+ const s=lm?lm[3]:((l.match(/%[A-Z0-9_]+-([A-Z0-7])-/)||[])[1]||'');
+ if(s&&'ECA0123'.includes(s))sev.err++;else if(s&&'W4'.includes(s))sev.warn++;else sev.info++;
+ if(TS.test(l)){const d=l.slice(0,11);dates[d]=(dates[d]||0)+1}
+ const t=tsn(l),ips=l.match(ipRe)||[];
+ const p=(l.match(portRe)||[])[1];
+ const macs=(l.match(macRe)||[]).map(nm).filter(x=>!skipMac(x));
+ macs.forEach(x=>{cnt(ex.macs,x);(macLines[x]=macLines[x]||[]).push(pl)});
+ const isDown=/%LINK-\w-Down|link.*\bdown\b|changed state to down/i.test(l),isUp=/%LINK-\w-Up|changed state to up/i.test(l);
+ if(isDown&&p){W.dn++;W.pd[p]=(W.pd[p]||0)+1;cnt(ex.down,cur+' '+p)}
+ if(isUp)W.up++;
+ if((isDown||isUp)&&p&&t>=(W.ls[p]?W.ls[p][0]:-1))W.ls[p]=[t,isDown?'down':'up'];
+ if(R.stp.test(l)){S.stp++;W.stp++}
+ if(/INIT-I-Startup|cold ?start/i.test(l))W.boot++;
+ if(/COPY-I-FILECPY/i.test(l))W.cp++;
+ const am=l.match(/source ([\d.]+) destination/);if(am)cnt(aaa,am[1]);
+ if(R.auth.test(l)){S.auth++;ips.forEach(i=>cnt(ex.auth,i))}
+ if(R.psec.test(l))S.psec.push({l:pl,macs});
+ if(R.flap.test(l)){S.flap.push(pl);if(p)cnt(ex.flap,cur+' '+p)}
+ if(R.unm.test(l)){S.unm.push(pl);ips.forEach(i=>cnt(unmIps,i))}
+ if(R.cfg.test(l))S.cfg.push(pl);
+ if(R.att.test(l))S.att.push(pl);
+}
+const sus=[];
+topN(ex.auth).filter(x=>x[1]>=5).forEach(([ip,n])=>sus.push(['High','Brute-force-like pattern',`${n} failed logins/auth failures from ${ip}`]));
+topN(ex.down).filter(x=>x[1]>=3).slice(0,15).forEach(([pt,n])=>sus.push([n>=50?'High':'Medium','Port flapping',`${pt}: ${n} times down (check cable/NIC/sleeping PC/loop)`]));
+topN(ex.flap).slice(0,10).forEach(([pt,n])=>sus.push(['High','MAC flapping / possible loop',`${pt}: ${n} MAC move events`]));
+S.att.filter(l=>/loop(?!back)|storm|err-?disable|bpdu|rogue|spoof|attack/i.test(l)).slice(0,10).forEach(l=>sus.push(['Medium','Security/loop event',l]));
+S.cfg.filter(l=>/reload|reboot|cold ?start|privilege|user (added|deleted|created)|enable password/i.test(l)).slice(0,10).forEach(l=>sus.push(['Medium','Reboot/access change',l]));
+if(Object.keys(aaa).length>1)sus.push(['Medium','Multiple management source IPs',topN(aaa).map(x=>x[0]+' ('+x[1]+')').join(', ')]);
+let unauth=[];
+if(wl.size)unauth=Object.keys(ex.macs).filter(x=>!wl.has(x)).map(x=>[x,ex.macs[x],(macLines[x]||[])[0]]);
+else{const st=new Set();S.psec.forEach(x=>x.macs.forEach(y=>st.add(y)));unauth=[...st].map(x=>[x,ex.macs[x],macLines[x][0]])}
+const exp=[...new Set([...expIps,...found.map(f=>f[1])])];
+const silent=exp.filter(i=>found.length?!pulled.has(i):!seen.has(i));
+const dd=topN(dates),odd=dd.slice(1).reduce((a,x)=>a+x[1],0);
+const score=Math.min(100,sev.err*2+Math.min(3,sus.filter(s=>s[0]=='High').length)*12+sus.length*2+unauth.length*6+silent.length*8+S.unm.length*3);
+return{n:nl,sev,ex,S,sus,unauth,silent,unmIps,score,wlOn:wl.size>0,expOn:exp.length>0,sw,aaa,found,odd,macSeen:Object.keys(ex.macs).length};
+}
+const tbl=(h,rows)=>rows.length?`<div class="w"><table><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr>${rows.slice(0,50).map(r=>`<tr>${r.map((x,i)=>`<td class="${i==r.length-1&&String(x).length>40?'m':''}">${esc(x)}</td>`).join('')}</tr>`).join('')}</table></div>${rows.length>50?`<small>Showing first 50 of ${rows.length}</small>`:''}`:'<span class="none">Nothing found ✓</span>';
+const tag=l=>`<span class="tag ${l=='High'?'hi':l=='Medium'?'me':'lo'}">${l}</span>`;
+let lastReport='';
+function render(a){
+const lvl=a.score>=60?'High':a.score>=25?'Medium':'Low';
+const sec=(t,b)=>`<div class="card"><h2>${t}</h2>${b}</div>`;
+const un=[...a.silent.map(i=>{const f=a.found.find(x=>x[1]==i);return[i+(f?' ('+f[0]+')':''),'Discovered/expected, but no log or SSH pull found (may be unmanageable)']}),...topN(a.unmIps).map(([i,n])=>[i,`${n} unreachable/timeout events`])];
+const alerts=[['Errors (E/C/A)',a.sev.err],['Warnings',a.sev.warn],['Info',a.sev.info],['STP/TCN events',a.S.stp],['Failed auth',a.S.auth],['Config/reload events',a.S.cfg.length],['Entries with old/odd dates (clock reset)',a.odd]];
+const swRows=Object.entries(a.sw).map(([n,w])=>[n,w.ip,w.n,w.dn,w.up,w.stp,w.boot,w.cp,(topN(w.pd)[0]||['-']).join(':'),Object.values(w.ls).filter(x=>x[1]=='down').length]);
+const aaaRows=topN(a.aaa);
+$('out').innerHTML=`
+<div class="kpis"><div class="k"><b>${a.n}</b><span>Log lines</span></div><div class="k"><b>${a.score}/100</b><span>Risk score ${tag(lvl)}</span></div><div class="k"><b>${un.length}</b><span>Unmanageable / silent</span></div><div class="k"><b>${a.sus.length}</b><span>Suspicious alerts</span></div><div class="k"><b>${a.unauth.length}</b><span>${a.wlOn?'Unauthorized MAC':'Flagged MAC'}</span></div></div>
+${sec('Unmanageable / unreachable switches',(a.expOn?'':'<small>Provide an expected IP list to also detect silent switches.</small>')+tbl(['IP','Detail'],un))}
+${sec('Switch-wise summary',tbl(['Switch','IP','Log lines','Link down','Link up','STP','Cold start','Config save','Busiest port (downs)','Ports down now'],swRows))}
+${sec('Management sessions (AAA) by source IP',tbl(['Source IP','Sessions'],aaaRows))}
+${sec('Alert summary',tbl(['Type','Count'],alerts))}
+${sec('Suspicious alerts',tbl(['Level','Type','Detail'],a.sus))}
+${sec(a.wlOn?'Unauthorized MAC (not in whitelist)':'Port-security violation MACs (no whitelist given)',(a.unauth.length||a.macSeen?tbl(['MAC','Seen','Sample log'],a.unauth):'<small>This log contains no MAC addresses. For MAC checks, provide the output of show mac address-table as a separate file.</small>'))}
+${sec('Top link-down ports',tbl(['Port','Down count'],topN(a.ex.down).slice(0,10)))}
+<div class="card"><button id="pdf"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6"/><path d="M9 15l3 3 3-3"/></svg>Generate PDF report</button> <button id="cp" class="s">Copy report</button> <small id="cpm"></small></div>`;
+lastReport=`CATALYST 1300 LOG ANALYSIS\nLines: ${a.n} | Risk: ${a.score}/100 (${lvl})\n\nUNMANAGEABLE/SILENT:\n${un.map(r=>' - '+r.join(': ')).join('\n')||' none'}\n\nALERTS:\n${alerts.map(r=>' - '+r.join(': ')).join('\n')}\n\nSWITCHES:\n${swRows.map(r=>' - '+r.join(' | ')).join('\n')}\n\nSUSPICIOUS:\n${a.sus.map(r=>` - [${r[0]}] ${r[1]}: ${r[2]}`).join('\n')||' none'}\n\nMAC FLAGGED:\n${a.unauth.map(r=>` - ${r[0]} (x${r[1]})`).join('\n')||' none'}`;
+$('cp').onclick=async()=>{try{await navigator.clipboard.writeText(lastReport);$('cpm').textContent='Copied'}catch(e){$('cpm').textContent='Copy failed; select the text and copy manually'}};
+lastA=a;lastD={lvl,un,alerts,swRows,aaaRows};$('pdf').onclick=savePdf;
+$('out').scrollIntoView({behavior:'smooth'});
+}
+
+let lastA=null,lastD=null;
+const S2=r=>r.map(x=>String(x==null?'':x).replace(/[^\x20-\x7E]/g,'?'));
+function buildPdf(){
+const J=window.jspdf;if(!J||!J.jsPDF)throw new Error('PDF library not loaded (internet access needed for the PDF engine)');
+const doc=new J.jsPDF({unit:'pt',format:'a4'}),a=lastA,d=lastD;let y=48;
+doc.setFontSize(18);doc.text('Catalyst 1300 Log Analysis Report',40,y);y+=20;
+doc.setFontSize(9);doc.setTextColor(100);doc.text('Generated: '+new Date().toLocaleString()+'   |   Log lines: '+a.n,40,y);y+=18;
+doc.setTextColor(0);doc.setFontSize(11);
+doc.text('Risk score: '+a.score+'/100 ('+d.lvl+')   |   Unmanageable/silent: '+d.un.length+'   |   Suspicious alerts: '+a.sus.length+'   |   Flagged MACs: '+a.unauth.length,40,y);y+=22;
+const sect=(t,h,b)=>{if(y>740){doc.addPage();y=48}doc.setFontSize(12);doc.setTextColor(0);doc.text(t,40,y);
+doc.autoTable({startY:y+6,head:[h],body:b.length?b.slice(0,150).map(S2):[['None found']],styles:{fontSize:8,cellPadding:3,overflow:'linebreak'},headStyles:{fillColor:[11,107,203]},margin:{left:40,right:40}});y=doc.lastAutoTable.finalY+20};
+sect('Unmanageable / unreachable switches',['IP','Detail'],d.un);
+sect('Alert summary',['Type','Count'],d.alerts);
+sect('Switch-wise summary',['Switch','IP','Lines','Down','Up','STP','Cold start','Cfg save','Busiest port','Down now'],d.swRows);
+sect('Management sessions (AAA) by source IP',['Source IP','Sessions'],d.aaaRows);
+sect('Suspicious alerts',['Level','Type','Detail'],a.sus);
+sect(a.wlOn?'Unauthorized MAC addresses':'Port-security violation MACs',['MAC','Seen','Sample log'],a.unauth);
+sect('Top link-down ports',['Port','Down count'],topN(a.ex.down).slice(0,15));
+const n=doc.getNumberOfPages();for(let i=1;i<=n;i++){doc.setPage(i);doc.setFontSize(8);doc.setTextColor(120);doc.text('Page '+i+' of '+n,520,820)}
+return doc}
+async function savePdf(){const m=$('cpm');try{m.textContent='Preparing PDF...';const buf=buildPdf().output('arraybuffer');
+const fn='catalyst1300-report-'+new Date().toISOString().slice(0,10)+'.pdf';let dl=null;
+try{dl=window.claude?await window.claude.use('downloads'):null}catch(e){}
+if(dl){await dl.save({filename:fn,data:buf})}
+else{const u=URL.createObjectURL(new Blob([buf],{type:'application/pdf'}));const el=document.createElement('a');el.href=u;el.download=fn;document.body.appendChild(el);el.click();el.remove();setTimeout(()=>URL.revokeObjectURL(u),3000)}
+m.textContent='PDF ready'}catch(e){m.textContent=e&&e.code==='declined'?'Save cancelled':'PDF failed: '+((e&&e.message)||e)}}
+const run=t=>{try{if(!t||!t.trim()){$('st').textContent='File/text is empty.';return}
+const a=analyze(t,$('wl').value,$('ex').value);$('st').textContent=a.n+' lines analyzed.';render(a)}catch(e){$('st').textContent='Error: '+e.message;$('out').innerHTML='<div class="card">Error: '+esc(e.message)+'</div>'}};
+const load=f=>{$('st').textContent='Reading '+f.name+' ...';const r=new FileReader();r.onload=()=>run(r.result);r.onerror=()=>{$('st').textContent='Could not read the file. Try pasting the text instead.'};r.readAsText(f)};
+$('pb').onclick=()=>run($('pt').value);
+$('f').onchange=e=>e.target.files[0]&&load(e.target.files[0]);
+const d=$('drop');
+d.ondragover=e=>{e.preventDefault();d.classList.add('h')};d.ondragleave=()=>d.classList.remove('h');
+d.ondrop=e=>{e.preventDefault();d.classList.remove('h');e.dataTransfer.files[0]&&load(e.dataTransfer.files[0])};
+$('demo').onclick=()=>{
+let s='';for(let i=0;i<6;i++)s+=`2026-09-28 10:0${i}:11 10.102.1.11 %LINK-W-Down: gi1/0/7\n2026-09-28 10:0${i}:14 10.102.1.11 %LINK-I-Up: gi1/0/7\n`;
+for(let i=0;i<6;i++)s+=`2026-09-28 11:1${i}:02 10.102.1.12 %AAA-W-REJECT: SSH login failed for user admin from 10.102.5.99\n`;
+s+=`2026-09-28 11:30:00 10.102.1.13 %PSECURITY-W-Violation: port gi1/0/12 MAC aa:bb:cc:11:22:33 violation\n2026-09-28 11:31:00 10.102.1.14 %STP-W-PORTSTATUS: gi1/0/2 topology change\n2026-09-28 11:40:00 10.102.1.15 SNMP timeout, device not responding\n2026-09-28 12:00:00 10.102.1.11 %SYSLOG-N-Config: startup-config copied, reload requested\n2026-09-28 12:05:00 10.102.1.13 MAC 00:1a:2b:3c:4d:5e moved from gi1/0/3 to gi1/0/9\n`;
+run(s)};
+
+const HV=2960854286;let fails=0,lockUntil=0;
+const hh=x=>{let h=2166136261;for(const c of x){h^=c.charCodeAt(0);h=Math.imul(h,16777619)>>>0}return h};
+const showApp=on=>{$('login').style.display=on?'none':'block';$('app').style.display=on?'block':'none'};
+const getA=()=>{try{return sessionStorage.getItem('c1300auth')==='1'}catch(e){return false}};
+const setA=v=>{try{v?sessionStorage.setItem('c1300auth','1'):sessionStorage.removeItem('c1300auth')}catch(e){}};
+function doLogin(){const now=Date.now();if(now<lockUntil){$('lerr').textContent='Too many attempts. Wait '+Math.ceil((lockUntil-now)/1000)+'s.';return}
+if(hh($('lu').value+':'+$('lp').value)===HV){fails=0;setA(true);$('lp').value='';$('lerr').textContent='';showApp(true)}
+else{fails++;$('lerr').textContent='Invalid username or password.';if(fails>=5){lockUntil=now+30000;fails=0}}}
+$('lb').onclick=doLogin;$('lp').onkeydown=e=>{if(e.key==='Enter')doLogin()};$('lu').onkeydown=e=>{if(e.key==='Enter')$('lp').focus()};
+$('lo').onclick=()=>{setA(false);$('out').innerHTML='';showApp(false)};
+showApp(getA());
+</script></body></html>
